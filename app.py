@@ -3,15 +3,15 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title="Simple Business Snapshot", page_icon="📈", layout="wide")
-st.title("📈 Simple Business Snapshot")
-st.caption("Upload a CSV/Excel with columns like: order_date, region, product, units, revenue, cost, customer_rating, is_returned.")
+st.set_page_config(page_title="Student Success Snapshot", page_icon="🎓", layout="wide")
+st.title("🎓 Student Success Snapshot")
+st.caption("Upload a CSV/Excel with columns like: term_date, program, campus, course, credits, grade_points, engagement_score, retained, advising_flag, student_id.")
 
-# -------------------- 1) Load data --------------------
+# -------------------- 1) Data input --------------------
 with st.sidebar:
     st.header("1) Data")
     file = st.file_uploader("Upload CSV or Excel", type=["csv", "xls", "xlsx"])
-    use_sample = st.checkbox("Use sample data (50 rows)", value=not file)
+    use_sample = st.checkbox("Use sample data (80 rows)", value=not file)
 
 @st.cache_data(show_spinner=False)
 def load_df(uploaded_file):
@@ -21,17 +21,15 @@ def load_df(uploaded_file):
 
 @st.cache_data(show_spinner=False)
 def load_sample():
-    # Minimal 50-row sample similar to retail/orders
-    url = "https://raw.githubusercontent.com/streamlit/example-data/refs/heads/main/sample_retail_50rows.csv"
-    # If you prefer, replace with your own hosted file or upload locally
-    df = pd.read_csv(url)
-    return df
+    # Use the sample you downloaded from ChatGPT (upload it with your app for offline use)
+    # If you host it elsewhere, you can replace this with a URL read.
+    return pd.read_csv("sample_student_success_80rows.csv")
 
 if use_sample:
     try:
         df = load_sample()
     except Exception:
-        st.error("Could not load the hosted sample. Upload a file instead.")
+        st.error("Sample file not found in the app folder. Upload a file instead.")
         st.stop()
 else:
     if not file:
@@ -43,123 +41,133 @@ else:
         st.error(f"Failed to read file: {e}")
         st.stop()
 
-# Basic tidy-ups
-if "order_date" in df.columns:
-    df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
+# Basic tidy-ups & type handling
+if "term_date" in df.columns:
+    df["term_date"] = pd.to_datetime(df["term_date"], errors="coerce")
 
 # -------------------- 2) Filters --------------------
 with st.sidebar:
     st.header("2) Filters")
-    # Only show filters if columns exist (keeps the app resilient)
-    if "region" in df.columns:
-        region_vals = ["(All)"] + sorted([x for x in df["region"].dropna().unique()])
-        region = st.selectbox("Region", region_vals, index=0)
-    else:
-        region = "(All)"
+    prog = "(All)"
+    camp = "(All)"
 
-    if "product" in df.columns:
-        product_vals = ["(All)"] + sorted([x for x in df["product"].dropna().unique()])
-        product = st.selectbox("Product", product_vals, index=0)
-    else:
-        product = "(All)"
+    if "program" in df.columns:
+        prog_vals = ["(All)"] + sorted([x for x in df["program"].dropna().unique()])
+        prog = st.selectbox("Program", prog_vals, index=0)
 
-    if "order_date" in df.columns:
-        min_d = pd.to_datetime(df["order_date"]).min()
-        max_d = pd.to_datetime(df["order_date"]).max()
-        date_range = st.date_input("Date range", value=(min_d, max_d))
+    if "campus" in df.columns:
+        camp_vals = ["(All)"] + sorted([x for x in df["campus"].dropna().unique()])
+        camp = st.selectbox("Campus", camp_vals, index=0)
+
+    if "term_date" in df.columns:
+        min_d = pd.to_datetime(df["term_date"]).min()
+        max_d = pd.to_datetime(df["term_date"]).max()
+        date_range = st.date_input("Term range", value=(min_d, max_d))
     else:
         date_range = None
 
 # Apply filters
 df_f = df.copy()
-if region != "(All)" and "region" in df_f.columns:
-    df_f = df_f[df_f["region"] == region]
-if product != "(All)" and "product" in df_f.columns:
-    df_f = df_f[df_f["product"] == product]
-if date_range and "order_date" in df_f.columns:
+if prog != "(All)" and "program" in df_f.columns:
+    df_f = df_f[df_f["program"] == prog]
+if camp != "(All)" and "campus" in df_f.columns:
+    df_f = df_f[df_f["campus"] == camp]
+if date_range and "term_date" in df_f.columns:
     start_d, end_d = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-    df_f = df_f[(df_f["order_date"] >= start_d) & (df_f["order_date"] <= end_d)]
+    df_f = df_f[(df_f["term_date"] >= start_d) & (df_f["term_date"] <= end_d)]
 
 if df_f.empty:
     st.warning("No rows after filters. Try widening your filters.")
     st.stop()
 
-# -------------------- 3) KPI cards --------------------
-# These KPIs are easy to explain and always useful.
-rev = df_f["revenue"].sum() if "revenue" in df_f.columns else None
-units = df_f["units"].sum() if "units" in df_f.columns else None
-rating = df_f["customer_rating"].mean() if "customer_rating" in df_f.columns else None
-ret_rate = df_f["is_returned"].mean() * 100 if "is_returned" in df_f.columns else None
+# -------------------- 3) KPI cards (clear & impactful) --------------------
+total_students = df_f["student_id"].nunique() if "student_id" in df_f.columns else None
+avg_gpa = df_f["grade_points"].mean() if "grade_points" in df_f.columns else None
+retention_rate = df_f["retained"].mean() * 100 if "retained" in df_f.columns else None
+avg_eng = df_f["engagement_score"].mean() if "engagement_score" in df_f.columns else None
 
 k1, k2, k3, k4 = st.columns(4)
 with k1:
-    st.metric("Total Revenue", f"${rev:,.2f}" if rev is not None else "—")
+    st.metric("Total Students", f"{int(total_students):,}" if total_students is not None else "—")
 with k2:
-    st.metric("Total Units", f"{int(units):,}" if units is not None else "—")
+    st.metric("Average GPA", f"{avg_gpa:.2f}" if avg_gpa is not None else "—")
 with k3:
-    st.metric("Avg Rating", f"{rating:.2f}/5" if rating is not None else "—")
+    st.metric("Retention Rate", f"{retention_rate:.1f}%" if retention_rate is not None else "—")
 with k4:
-    st.metric("Return Rate", f"{ret_rate:.1f}%" if ret_rate is not None else "—")
+    st.metric("Avg Engagement", f"{avg_eng:.1f}" if avg_eng is not None else "—")
 
 st.markdown("---")
 
-# -------------------- 4) Two intuitive charts --------------------
+# -------------------- 4) Two simple charts --------------------
 c1, c2 = st.columns(2)
 
-# Chart A: Revenue by product (or top categorical column)
+# A) Average GPA by Program
 with c1:
-    st.subheader("Revenue by Product")
-    if "product" in df_f.columns and "revenue" in df_f.columns:
-        top_prod = (
-            df_f.groupby("product", dropna=False)["revenue"]
-            .sum()
+    st.subheader("Average GPA by Program")
+    if "program" in df_f.columns and "grade_points" in df_f.columns:
+        gpa_prog = (
+            df_f.groupby("program", dropna=False)["grade_points"]
+            .mean()
             .reset_index()
-            .sort_values("revenue", ascending=False)
-            .head(10)
+            .sort_values("grade_points", ascending=False)
         )
-        fig = px.bar(top_prod, x="product", y="revenue", title=None, labels={"revenue": "Revenue ($)"})
+        fig = px.bar(gpa_prog, x="program", y="grade_points",
+                     labels={"grade_points": "Average GPA", "program": "Program"})
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Need 'product' and 'revenue' columns for this chart.")
+        st.info("Need 'program' and 'grade_points' columns.")
 
-# Chart B: Daily/Monthly revenue trend
+# B) Retention trend over time
 with c2:
-    st.subheader("Revenue Trend")
-    if "order_date" in df_f.columns and "revenue" in df_f.columns:
-        # Auto rollup by day; if you prefer monthly: df_f.resample('MS', on='order_date')['revenue'].sum()
+    st.subheader("Retention Trend")
+    if "term_date" in df_f.columns and "retained" in df_f.columns:
         trend = (
-            df_f.dropna(subset=["order_date"])
-               .groupby(df_f["order_date"].dt.date)["revenue"]
-               .sum()
+            df_f.dropna(subset=["term_date"])
+               .groupby(df_f["term_date"].dt.to_period("M"))["retained"]
+               .mean()
                .reset_index()
-               .rename(columns={"order_date": "date"})
         )
-        fig2 = px.line(trend, x="date", y="revenue", markers=True, labels={"revenue": "Revenue ($)", "date": "Date"})
+        trend["term"] = trend["term_date"].astype(str)
+        fig2 = px.line(trend, x="term", y="retained",
+                       markers=True,
+                       labels={"retained":"Retention Rate", "term":"Term (Month)"},
+                       range_y=[0,1])
+        fig2.update_yaxes(tickformat=".0%")
         st.plotly_chart(fig2, use_container_width=True)
     else:
-        st.info("Need 'order_date' and 'revenue' columns for this chart.")
+        st.info("Need 'term_date' and 'retained' columns.")
 
 st.markdown("---")
 
-# -------------------- 5) Top 10 table --------------------
-st.subheader("Top 10 Orders by Revenue")
-if "revenue" in df_f.columns:
-    # Pick common identifying columns if present
-    cols_show = [c for c in ["order_id", "order_date", "region", "product", "units", "revenue"] if c in df_f.columns]
-    top10 = df_f.sort_values("revenue", ascending=False).head(10)[cols_show]
-    st.dataframe(top10, use_container_width=True)
+# -------------------- 5) Actionable table --------------------
+st.subheader("Advising Priority (Low Engagement or Not Retained)")
+if {"student_id","program","campus","engagement_score","retained","advising_flag"}.issubset(df_f.columns):
+    at_risk = df_f.copy()
+    # Define simple rule: engagement < 55 OR not retained OR advising_flag == 'Yes'
+    at_risk["priority"] = (
+        (at_risk["engagement_score"].fillna(0) < 55) |
+        (~at_risk["retained"].fillna(True)) |
+        (at_risk["advising_flag"].fillna("No") == "Yes")
+    )
+    tbl = (
+        at_risk[at_risk["priority"]]
+        .sort_values(["engagement_score"], na_position="first")
+        [["student_id","program","campus","course","grade_points","engagement_score","retained","advising_flag"]]
+        .head(10)
+    )
+    st.dataframe(tbl, use_container_width=True)
 else:
-    st.info("Need a 'revenue' column for the top-10 table.")
+    st.info("For the advising table, include: student_id, program, campus, course, grade_points, engagement_score, retained, advising_flag.")
 
-# -------------------- Download current view (optional) --------------------
+# -------------------- Download current view --------------------
 buff = io.BytesIO()
 df_f.to_csv(buff, index=False)
 st.download_button(
     "⬇️ Download filtered data (CSV)",
     data=buff.getvalue(),
-    file_name="filtered_data.csv",
+    file_name="student_success_filtered.csv",
     mime="text/csv",
     use_container_width=True
 )
 
-st.caption("Tip: keep columns simple and consistent. Minimum recommended: order_date, product, region, units, revenue.")
+st.caption("Explain it simply: *Pick Program/Campus/Term → see total students, GPA, retention, engagement → view trends → export list for advising.*")
