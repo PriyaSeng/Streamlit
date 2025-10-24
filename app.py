@@ -1,226 +1,165 @@
 import io
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 
-st.set_page_config(page_title="Data Explorer (Streamlit Cloud)", page_icon="📊", layout="wide")
-st.title("📊 Data Explorer — Cloud-friendly")
-st.caption("Upload a CSV/Excel file → explore → clean → visualize → PCA → download.")
+st.set_page_config(page_title="Simple Business Snapshot", page_icon="📈", layout="wide")
+st.title("📈 Simple Business Snapshot")
+st.caption("Upload a CSV/Excel with columns like: order_date, region, product, units, revenue, cost, customer_rating, is_returned.")
 
-# ------------------------- Helpers & Caching -------------------------
-@st.cache_data(show_spinner=False)
-def load_file(file, sheet_name=None):
-    suffix = (file.name.split(".")[-1]).lower()
-    if suffix in ["xls", "xlsx"]:
-        return pd.read_excel(file, sheet_name=sheet_name)
-    return pd.read_csv(file, low_memory=False)
-
-@st.cache_data(show_spinner=False)
-def memory_mb(df: pd.DataFrame) -> float:
-    return float(df.memory_usage(deep=True).sum()) / (1024**2)
-
-@st.cache_data(show_spinner=False)
-def basic_stats(df: pd.DataFrame):
-    """Handle pandas versions with/without datetime_is_numeric."""
-    try:
-        return df.describe(include="all", datetime_is_numeric=True).T
-    except TypeError:
-        return df.describe(include="all").T
-
-@st.cache_data(show_spinner=False)
-def missing_table(df: pd.DataFrame):
-    n = len(df)
-    miss = df.isna().sum().to_frame("missing_count")
-    miss["missing_pct"] = (miss["missing_count"] / n * 100).round(2)
-    miss = miss[miss["missing_count"] > 0].sort_values("missing_pct", ascending=False)
-    return miss
-
-@st.cache_data(show_spinner=False)
-def corr_numeric(df: pd.DataFrame):
-    num = df.select_dtypes(include=np.number)
-    if num.shape[1] < 2:
-        return None
-    try:
-        return num.corr(numeric_only=True)
-    except TypeError:
-        return num.corr()
-
-# ------------------------- Sidebar: Data Upload -------------------------
+# -------------------- 1) Load data --------------------
 with st.sidebar:
-    st.header("📥 Data")
+    st.header("1) Data")
     file = st.file_uploader("Upload CSV or Excel", type=["csv", "xls", "xlsx"])
-    sheet = st.text_input("Excel sheet name (optional)")
-    st.markdown("---")
-    st.header("🧼 Cleaning")
-    drop_dupes = st.checkbox("Drop duplicate rows", value=True)
-    impute_num = st.checkbox("Impute numeric NA with median", value=True)
-    impute_cat = st.checkbox("Impute categorical NA with mode", value=True)
-    st.markdown("---")
-    st.header("⚙️ Options")
-    sample_rows = st.slider("Sample rows for speed (0 = all)", 0, 100000, 0, step=1000)
-    st.caption("Sampling only affects display and PCA speed. Full data is used for downloads.")
+    use_sample = st.checkbox("Use sample data (50 rows)", value=not file)
 
-if file is None:
-    st.info("Upload a CSV or Excel file using the sidebar to start.")
+@st.cache_data(show_spinner=False)
+def load_df(uploaded_file):
+    if uploaded_file.name.lower().endswith((".xls", ".xlsx")):
+        return pd.read_excel(uploaded_file)
+    return pd.read_csv(uploaded_file)
+
+@st.cache_data(show_spinner=False)
+def load_sample():
+    # Minimal 50-row sample similar to retail/orders
+    url = "https://raw.githubusercontent.com/streamlit/example-data/refs/heads/main/sample_retail_50rows.csv"
+    # If you prefer, replace with your own hosted file or upload locally
+    df = pd.read_csv(url)
+    return df
+
+if use_sample:
+    try:
+        df = load_sample()
+    except Exception:
+        st.error("Could not load the hosted sample. Upload a file instead.")
+        st.stop()
+else:
+    if not file:
+        st.info("Upload a CSV/XLSX or tick 'Use sample data'.")
+        st.stop()
+    try:
+        df = load_df(file)
+    except Exception as e:
+        st.error(f"Failed to read file: {e}")
+        st.stop()
+
+# Basic tidy-ups
+if "order_date" in df.columns:
+    df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
+
+# -------------------- 2) Filters --------------------
+with st.sidebar:
+    st.header("2) Filters")
+    # Only show filters if columns exist (keeps the app resilient)
+    if "region" in df.columns:
+        region_vals = ["(All)"] + sorted([x for x in df["region"].dropna().unique()])
+        region = st.selectbox("Region", region_vals, index=0)
+    else:
+        region = "(All)"
+
+    if "product" in df.columns:
+        product_vals = ["(All)"] + sorted([x for x in df["product"].dropna().unique()])
+        product = st.selectbox("Product", product_vals, index=0)
+    else:
+        product = "(All)"
+
+    if "order_date" in df.columns:
+        min_d = pd.to_datetime(df["order_date"]).min()
+        max_d = pd.to_datetime(df["order_date"]).max()
+        date_range = st.date_input("Date range", value=(min_d, max_d))
+    else:
+        date_range = None
+
+# Apply filters
+df_f = df.copy()
+if region != "(All)" and "region" in df_f.columns:
+    df_f = df_f[df_f["region"] == region]
+if product != "(All)" and "product" in df_f.columns:
+    df_f = df_f[df_f["product"] == product]
+if date_range and "order_date" in df_f.columns:
+    start_d, end_d = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    df_f = df_f[(df_f["order_date"] >= start_d) & (df_f["order_date"] <= end_d)]
+
+if df_f.empty:
+    st.warning("No rows after filters. Try widening your filters.")
     st.stop()
 
-# ------------------------- Load data -------------------------
-try:
-    df_raw = load_file(file, sheet_name=sheet if sheet else None)
-except Exception as e:
-    st.error(f"Error loading file: {e}")
-    st.stop()
+# -------------------- 3) KPI cards --------------------
+# These KPIs are easy to explain and always useful.
+rev = df_f["revenue"].sum() if "revenue" in df_f.columns else None
+units = df_f["units"].sum() if "units" in df_f.columns else None
+rating = df_f["customer_rating"].mean() if "customer_rating" in df_f.columns else None
+ret_rate = df_f["is_returned"].mean() * 100 if "is_returned" in df_f.columns else None
 
-if df_raw.empty:
-    st.warning("Your uploaded file seems empty.")
-    st.stop()
-
-st.success(f"Loaded **{file.name}** — shape `{df_raw.shape[0]} x {df_raw.shape[1]}` · memory: {memory_mb(df_raw):.2f} MB")
-
-df_display = df_raw.sample(n=min(sample_rows, len(df_raw)), random_state=7) if sample_rows else df_raw.copy()
-
-# ------------------------- Cleaning -------------------------
-def clean(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if drop_dupes:
-        out = out.drop_duplicates()
-    if impute_num:
-        for col in out.select_dtypes(include=np.number).columns:
-            out[col] = out[col].fillna(out[col].median())
-    if impute_cat:
-        for col in out.select_dtypes(exclude=np.number).columns:
-            try:
-                mode_val = out[col].mode(dropna=True).iloc[0]
-                out[col] = out[col].fillna(mode_val)
-            except Exception:
-                pass
-    return out
-
-df_clean_full = clean(df_raw)
-df_clean_display = clean(df_display)
-
-# ------------------------- Tabs -------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["👀 Preview", "🔎 Quality & Stats", "📈 Visualize", "🧭 PCA"])
-
-with tab1:
-    st.subheader("Data Preview")
-    st.dataframe(df_clean_display.head(500), use_container_width=True)
-    st.caption(f"Showing up to 500 rows (sampled = {sample_rows>0}). Full rows: {len(df_clean_full):,}")
-
-    buff = io.BytesIO()
-    df_clean_full.to_csv(buff, index=False)
-    st.download_button(
-        "⬇️ Download cleaned CSV",
-        data=buff.getvalue(),
-        file_name=f"cleaned_{file.name.rsplit('.',1)[0]}.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-
-with tab2:
-    st.subheader("Schema")
-    st.dataframe(pd.DataFrame({
-        "column": df_clean_display.columns,
-        "dtype": df_clean_display.dtypes.astype(str).values
-    }), use_container_width=True)
-    st.markdown("---")
-
-    st.subheader("Missingness")
-    miss = missing_table(df_clean_display)
-    if miss.empty:
-        st.success("No missing values in this sample.")
-    else:
-        st.dataframe(miss, use_container_width=True)
-
-    st.markdown("---")
-    st.subheader("Descriptive Stats")
-    st.dataframe(basic_stats(df_clean_display), use_container_width=True)
-
-    st.markdown("---")
-    st.subheader("Correlation (numeric)")
-    corr = corr_numeric(df_clean_display)
-    if corr is None:
-        st.info("Not enough numeric columns for a correlation heatmap.")
-    else:
-        fig = px.imshow(corr, text_auto=False, aspect="auto", title="Correlation Heatmap")
-        st.plotly_chart(fig, use_container_width=True)
-
-with tab3:
-    st.subheader("Chart Builder")
-    cols = df_clean_display.columns.tolist()
-    x = st.selectbox("X axis", cols, index=min(0, len(cols)-1))
-    y = st.selectbox("Y axis (optional)", ["(count)"] + cols, index=0)
-    color = st.selectbox("Color/group (optional)", ["(none)"] + cols, index=0)
-    kind = st.selectbox("Chart type", ["bar", "line", "scatter", "box"], index=0)
-    agg = st.selectbox("Aggregation (if Y = count or categorical)", ["count", "sum", "mean", "median"], index=0)
-
-    df_plot = df_clean_display.copy()
-
-    if y == "(count)":
-        group_cols = [x] + ([color] if color != "(none)" else [])
-        plot_df = df_plot.groupby(group_cols, dropna=False).size().reset_index(name="value")
-        y_plot = "value"
-    else:
-        group_cols = [x] + ([color] if color != "(none)" else [])
-        if agg == "count":
-            plot_df = df_plot.groupby(group_cols, dropna=False)[y].count().reset_index(name="value")
-        else:
-            plot_df = df_plot.groupby(group_cols, dropna=False)[y].agg(agg).reset_index(name="value")
-        y_plot = "value"
-
-    if kind == "bar":
-        fig = px.bar(plot_df, x=x, y=y_plot, color=None if color == "(none)" else color)
-    elif kind == "line":
-        fig = px.line(plot_df, x=x, y=y_plot, color=None if color == "(none)" else color, markers=True)
-    elif kind == "scatter":
-        if y != "(count)" and color != "(none)":
-            fig = px.scatter(df_plot, x=x, y=y, color=color)
-        elif y != "(count)":
-            fig = px.scatter(df_plot, x=x, y=y)
-        else:
-            st.info("Scatter requires a numeric Y.")
-            fig = None
-    else:
-        fig = px.box(df_plot, x=x, y=None if y == "(count)" else y, color=None if color == "(none)" else color)
-
-    if fig:
-        st.plotly_chart(fig, use_container_width=True)
-
-with tab4:
-    st.subheader("Principal Component Analysis (PCA)")
-    num = df_clean_display.select_dtypes(include=np.number).dropna(axis=0)
-    if num.shape[1] < 2 or num.shape[0] < 2:
-        st.info("Need at least 2 numeric columns and 2 rows for PCA.")
-    else:
-        scale = st.checkbox("Standardize features", value=True)
-        components = st.slider("Components", 2, min(10, num.shape[1]), 2)
-        X = StandardScaler().fit_transform(num.values) if scale else num.values
-        pca = PCA(n_components=components, random_state=7)
-        Xp = pca.fit_transform(X)
-        exp_var = (pca.explained_variance_ratio_ * 100).round(2)
-
-        st.write(f"Explained variance: {exp_var[:3]}% (first components)")
-        fig = px.scatter(
-            x=Xp[:, 0], y=Xp[:, 1],
-            labels={"x": f"PC1 ({exp_var[0]}%)", "y": f"PC2 ({exp_var[1]}%)"},
-            title="PCA — PC1 vs PC2"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        pca_df = pd.DataFrame(Xp[:, :2], columns=["PC1", "PC2"], index=num.index)
-        joined = df_clean_display.join(pca_df, how="left")
-        buff2 = io.BytesIO()
-        joined.to_csv(buff2, index=False)
-        st.download_button(
-            "⬇️ Download data with PCA (PC1, PC2)",
-            data=buff2.getvalue(),
-            file_name="data_with_pca.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+k1, k2, k3, k4 = st.columns(4)
+with k1:
+    st.metric("Total Revenue", f"${rev:,.2f}" if rev is not None else "—")
+with k2:
+    st.metric("Total Units", f"{int(units):,}" if units is not None else "—")
+with k3:
+    st.metric("Avg Rating", f"{rating:.2f}/5" if rating is not None else "—")
+with k4:
+    st.metric("Return Rate", f"{ret_rate:.1f}%" if ret_rate is not None else "—")
 
 st.markdown("---")
-st.caption("Optimized for Streamlit Community Cloud — <2.7 GB RAM. Upload sample_retail_50rows.csv for testing.")
+
+# -------------------- 4) Two intuitive charts --------------------
+c1, c2 = st.columns(2)
+
+# Chart A: Revenue by product (or top categorical column)
+with c1:
+    st.subheader("Revenue by Product")
+    if "product" in df_f.columns and "revenue" in df_f.columns:
+        top_prod = (
+            df_f.groupby("product", dropna=False)["revenue"]
+            .sum()
+            .reset_index()
+            .sort_values("revenue", ascending=False)
+            .head(10)
+        )
+        fig = px.bar(top_prod, x="product", y="revenue", title=None, labels={"revenue": "Revenue ($)"})
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Need 'product' and 'revenue' columns for this chart.")
+
+# Chart B: Daily/Monthly revenue trend
+with c2:
+    st.subheader("Revenue Trend")
+    if "order_date" in df_f.columns and "revenue" in df_f.columns:
+        # Auto rollup by day; if you prefer monthly: df_f.resample('MS', on='order_date')['revenue'].sum()
+        trend = (
+            df_f.dropna(subset=["order_date"])
+               .groupby(df_f["order_date"].dt.date)["revenue"]
+               .sum()
+               .reset_index()
+               .rename(columns={"order_date": "date"})
+        )
+        fig2 = px.line(trend, x="date", y="revenue", markers=True, labels={"revenue": "Revenue ($)", "date": "Date"})
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("Need 'order_date' and 'revenue' columns for this chart.")
+
+st.markdown("---")
+
+# -------------------- 5) Top 10 table --------------------
+st.subheader("Top 10 Orders by Revenue")
+if "revenue" in df_f.columns:
+    # Pick common identifying columns if present
+    cols_show = [c for c in ["order_id", "order_date", "region", "product", "units", "revenue"] if c in df_f.columns]
+    top10 = df_f.sort_values("revenue", ascending=False).head(10)[cols_show]
+    st.dataframe(top10, use_container_width=True)
+else:
+    st.info("Need a 'revenue' column for the top-10 table.")
+
+# -------------------- Download current view (optional) --------------------
+buff = io.BytesIO()
+df_f.to_csv(buff, index=False)
+st.download_button(
+    "⬇️ Download filtered data (CSV)",
+    data=buff.getvalue(),
+    file_name="filtered_data.csv",
+    mime="text/csv",
+    use_container_width=True
+)
+
+st.caption("Tip: keep columns simple and consistent. Minimum recommended: order_date, product, region, units, revenue.")
