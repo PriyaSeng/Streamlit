@@ -1,7 +1,3 @@
-Here’s a **GitHub-ready project description** for your new Streamlit dashboard.
-You can copy this directly into your repository’s **README.md** — it’s clear, professional, and beginner-friendly while showing impact and practical value.
-
----
 
 # 🎓 Student Success Snapshot — Streamlit Dashboard
 
@@ -128,4 +124,5 @@ Your data should contain the following columns (use the included sample as a gui
 MIT License © 2025 Priya Arvind Singh Sengar
 
 ---
+
 
